@@ -1,0 +1,32 @@
+name: Proxy Checker (7AM-7PM Daily)
+
+on:
+  schedule:
+    - cron: '0 7,19 * * *'  # Runs at 7 AM & 7 PM UTC
+  workflow_dispatch:  # Manual trigger option
+
+jobs:
+  check_proxies:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+          git clone https://github.com/fredycibersec/ip-blacklist-checker.git
+
+      - name: Run proxy checker
+        run: python scripts/proxy_checker.py
+
+      - name: Upload clean proxies
+        uses: actions/upload-artifact@v3
+        with:
+          name: clean_proxies
+          path: clean_proxies.txt
