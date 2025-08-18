@@ -48,8 +48,8 @@ def main():
     setup_blacklist_checker()
     
     proxy_sources = [
-        "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
-        "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
+        "https://raw.githubusercontent.com/akbarali123A/Proxy/refs/heads/main/working_proxies.txt",
+        
     ]
     
     print("Fetching proxies...")
