@@ -78,8 +78,7 @@ def main():
     
     # Proxy sources
     proxy_sources = [
-        "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
-       
+        "https://raw.githubusercontent.com/akbarali123A/Proxy/refs/heads/main/working_proxies.txt"
     ]
     
     # Fetch proxies
