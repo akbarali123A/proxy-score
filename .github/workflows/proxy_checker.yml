@@ -2,31 +2,49 @@ name: Proxy Checker (7AM-7PM Daily)
 
 on:
   schedule:
-    - cron: '0 7,19 * * *'  # Runs at 7 AM & 7 PM UTC
+    - cron: '0 7,19 * * *'  # Runs at 7 AM & 7 PM UTC daily
   workflow_dispatch:  # Manual trigger option
 
 jobs:
   check_proxies:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
+          cache: 'pip'
 
       - name: Install dependencies
         run: |
           pip install requests
+          sudo apt-get update
+          sudo apt-get install -y git
+
+      - name: Clone blacklist checker
+        run: |
           git clone https://github.com/fredycibersec/ip-blacklist-checker.git
 
-      - name: Run proxy checker
-        run: python scripts/proxy_checker.py
+      - name: Run proxy checker script
+        run: |
+          python scripts/proxy_checker.py
 
-      - name: Upload clean proxies
-        uses: actions/upload-artifact@v3
+      - name: Upload clean proxies as artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: clean_proxies
+          name: clean-proxies
           path: clean_proxies.txt
+          retention-days: 7
+
+      - name: Commit and push results
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add clean_proxies.txt
+          git commit -m "Update clean proxies - $(date +'%Y-%m-%d %H:%M')" || echo "No changes to commit"
+          git push origin HEAD:${{ github.ref }} || echo "Nothing to push"
