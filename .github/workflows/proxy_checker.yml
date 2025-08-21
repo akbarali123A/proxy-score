@@ -1,4 +1,4 @@
-name: Proxy Score (7AM-7PM Daily)
+name: Ultra Fast Proxy Checker (7AM-7PM Daily)
 
 on:
   schedule:
@@ -8,7 +8,7 @@ on:
 jobs:
   check_proxies:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     
     steps:
       - name: Checkout repository
@@ -22,18 +22,9 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests
+          pip install requests aiodns aiohttp
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y git
-
-      - name: Clone blacklist checker
-        run: |
-          git clone https://github.com/fredycibersec/ip-blacklist-checker.git
-
-      - name: Run proxy checker script
+      - name: Run ultra-fast proxy checker
         run: |
           python scripts/proxy_checker.py
 
