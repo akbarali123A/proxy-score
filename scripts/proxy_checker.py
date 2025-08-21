@@ -1,121 +1,184 @@
 import requests
-import subprocess
-import os
+import asyncio
+import aiohttp
 import concurrent.futures
-from datetime import datetime
-import hashlib
+from typing import List, Set
+import time
+import re
+import sys
+import os
+
+# Add scripts directory to path
+sys.path.append(os.path.dirname(__file__))
+
+# Import our fast blacklist checker
+from blacklist_checker import FastBlacklistChecker
 
 # Config
-MAX_WORKERS = 50
-BLACKLIST_THRESHOLD = 70
-GITHUB_REPO = "https://github.com/fredycibersec/ip-blacklist-checker"
-LOCAL_CHECKER_DIR = "ip-blacklist-checker"
+MAX_WORKERS = 200  # Increased concurrency
+BATCH_SIZE = 1000  # Process in batches
+TIMEOUT = 5  # Seconds
 
-def setup_blacklist_checker():
-    """Setup the blacklist checker tool"""
-    if not os.path.exists(LOCAL_CHECKER_DIR):
-        print("Cloning blacklist checker...")
-        subprocess.run(["git", "clone", GITHUB_REPO, LOCAL_CHECKER_DIR], 
-                      check=True, capture_output=True)
-        print("Blacklist checker setup complete")
-
-def fetch_proxies(urls):
-    """Fetch proxies from GitHub raw URLs"""
-    proxies = set()
-    for url in urls:
+class UltraFastProxyChecker:
+    def __init__(self):
+        self.blacklist_checker = FastBlacklistChecker()
+        self.session = None
+        
+    async def setup_session(self):
+        """Setup aiohttp session"""
+        self.session = aiohttp.ClientSession()
+        
+    async def fetch_url(self, url: str) -> List[str]:
+        """Fetch proxies from a URL asynchronously"""
         try:
-            print(f"Fetching from: {url}")
-            res = requests.get(url, timeout=15)
-            if res.status_code == 200:
-                new_proxies = [p.strip() for p in res.text.splitlines() if p.strip()]
-                proxies.update(new_proxies)
-                print(f"Found {len(new_proxies)} proxies from {url}")
-            else:
-                print(f"Failed to fetch {url}: Status {res.status_code}")
-        except Exception as e:
-            print(f"Error fetching {url}: {e}")
-            continue
-    return list(proxies)
-
-def run_blacklist_check(ip):
-    """Check if IP is blacklisted using local tool"""
-    try:
-        result = subprocess.run(
-            ["python", f"{LOCAL_CHECKER_DIR}/checker.py", ip],
-            capture_output=True,
-            text=True,
-            timeout=8
-        )
-        return "BLACKLISTED" in result.stdout
-    except subprocess.TimeoutExpired:
-        print(f"Timeout checking IP: {ip}")
-        return True
-    except Exception as e:
-        print(f"Error checking IP {ip}: {e}")
-        return True
-
-def check_proxy(proxy):
-    """Check individual proxy"""
-    try:
-        ip = proxy.split(":")[0].strip()
-        if not ip:
-            return None
+            async with self.session.get(url, timeout=TIMEOUT) as response:
+                if response.status == 200:
+                    text = await response.text()
+                    return [p.strip() for p in text.splitlines() if p.strip()]
+        except:
+            pass
+        return []
+    
+    async def fetch_all_proxies(self, urls: List[str]) -> Set[str]:
+        """Fetch proxies from all URLs concurrently"""
+        if not self.session:
+            await self.setup_session()
             
-        if run_blacklist_check(ip):
-            return None
+        tasks = [self.fetch_url(url) for url in urls]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        proxies = set()
+        for result in results:
+            if isinstance(result, list):
+                proxies.update(result)
+                
+        return proxies
+    
+    def validate_proxy_format(self, proxy: str) -> bool:
+        """Quick validation of proxy format"""
+        if not proxy or ':' not in proxy:
+            return False
             
-        return proxy
-    except Exception as e:
-        print(f"Error processing proxy {proxy}: {e}")
-        return None
+        ip, port = proxy.split(':', 1)
+        
+        # Validate IP format
+        if not re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', ip):
+            return False
+            
+        # Validate port
+        try:
+            port_num = int(port)
+            if not 1 <= port_num <= 65535:
+                return False
+        except:
+            return False
+            
+        return True
+    
+    def extract_ips(self, proxies: List[str]) -> List[str]:
+        """Extract IPs from proxy list"""
+        ips = []
+        valid_proxies = []
+        
+        for proxy in proxies:
+            if self.validate_proxy_format(proxy):
+                ip = proxy.split(':', 1)[0]
+                ips.append(ip)
+                valid_proxies.append(proxy)
+                
+        return ips, valid_proxies
+    
+    def check_proxies_batch(self, proxies: List[str]) -> List[str]:
+        """Check a batch of proxies for blacklisting"""
+        if not proxies:
+            return []
+            
+        # Extract IPs
+        ips, valid_proxies = self.extract_ips(proxies)
+        
+        if not ips:
+            return []
+            
+        # Check all IPs in batch
+        results = self.blacklist_checker.check_multiple_ips(ips)
+        
+        # Return only clean proxies
+        clean_proxies = []
+        for proxy, ip in zip(valid_proxies, ips):
+            if not results.get(ip, False):
+                clean_proxies.append(proxy)
+                
+        return clean_proxies
+    
+    async def run(self):
+        """Main execution method"""
+        start_time = time.time()
+        
+        # Proxy sources
+        proxy_sources = [
+            "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
+            "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
+            "https://raw.githubusercontent.com/roosterkid/openproxylist/main/http.txt",
+            "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
+            "https://raw.githubusercontent.com/ProxyScraper/ProxyScraper/main/http.txt",
+        ]
+        
+        print("Fetching proxies from sources...")
+        all_proxies = await self.fetch_all_proxies(proxy_sources)
+        print(f"Found {len(all_proxies)} total proxies")
+        
+        # Convert to list for processing
+        proxies_list = list(all_proxies)
+        total_proxies = len(proxies_list)
+        
+        if total_proxies == 0:
+            print("No proxies found. Exiting.")
+            return []
+        
+        print(f"Processing {total_proxies} proxies...")
+        
+        # Process in batches for memory efficiency
+        clean_proxies = []
+        for i in range(0, total_proxies, BATCH_SIZE):
+            batch = proxies_list[i:i + BATCH_SIZE]
+            batch_clean = self.check_proxies_batch(batch)
+            clean_proxies.extend(batch_clean)
+            
+            # Progress update
+            processed = min(i + BATCH_SIZE, total_proxies)
+            elapsed = time.time() - start_time
+            speed = processed / elapsed if elapsed > 0 else 0
+            
+            print(f"Processed: {processed}/{total_proxies} | "
+                  f"Valid: {len(clean_proxies)} | "
+                  f"Speed: {speed:.1f} proxies/sec")
+        
+        # Close session
+        if self.session:
+            await self.session.close()
+            
+        total_time = time.time() - start_time
+        print(f"\nCompleted in {total_time:.2f} seconds")
+        print(f"Found {len(clean_proxies)} clean proxies out of {total_proxies}")
+        
+        return clean_proxies
 
 def main():
     """Main function"""
-    print("Starting proxy checker...")
+    print("Starting ultra-fast proxy checker...")
     
-    # Setup blacklist checker
-    setup_blacklist_checker()
-    
-    # Proxy sources
-    proxy_sources = [
-        "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
-        "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
-        "https://raw.githubusercontent.com/roosterkid/openproxylist/main/http.txt",
-        "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
-        "https://raw.githubusercontent.com/ProxyScraper/ProxyScraper/main/http.txt",
-    ]
-    
-    # Fetch proxies
-    print("Fetching proxies from sources...")
-    proxies = fetch_proxies(proxy_sources)
-    print(f"Total unique proxies found: {len(proxies)}")
-    
-    if not proxies:
-        print("No proxies found. Exiting.")
-        return
-    
-    # Check proxies
-    print("Checking proxies for blacklisting...")
-    valid_proxies = []
-    
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {executor.submit(check_proxy, proxy): proxy for proxy in proxies}
-        
-        for i, future in enumerate(concurrent.futures.as_completed(futures), 1):
-            result = future.result()
-            if result:
-                valid_proxies.append(result)
-            
-            # Progress update
-            if i % 1000 == 0 or i == len(proxies):
-                print(f"Checked {i}/{len(proxies)} proxies | Valid: {len(valid_proxies)}")
+    checker = UltraFastProxyChecker()
+    clean_proxies = asyncio.run(checker.run())
     
     # Save results
-    print(f"Saving {len(valid_proxies)} valid proxies...")
-    with open("clean_proxies.txt", "w") as f:
-        f.write("\n".join(valid_proxies))
+    if clean_proxies:
+        with open("clean_proxies.txt", "w") as f:
+            f.write("\n".join(clean_proxies))
+        print(f"Results saved to clean_proxies.txt")
+    else:
+        print("No clean proxies found")
     
-    print("Proxy check completed successfully!")
+    print("Proxy check completed!")
 
 if __name__ == "__main__":
     main()
