@@ -1,27 +1,21 @@
-import requests
 import asyncio
 import aiohttp
-import concurrent.futures
 from typing import List, Set
 import time
 import re
-import sys
 import os
 
-# Add scripts directory to path
-sys.path.append(os.path.dirname(__file__))
-
 # Import our fast blacklist checker
-from blacklist_checker import FastBlacklistChecker
+from blacklist_checker import UltraFastBlacklistChecker
 
 # Config
-MAX_WORKERS = 200  # Increased concurrency
+MAX_CONCURRENT_DNS = 500  # Maximum concurrent DNS queries
 BATCH_SIZE = 1000  # Process in batches
-TIMEOUT = 5  # Seconds
+TIMEOUT = 10  # Seconds
 
 class UltraFastProxyChecker:
     def __init__(self):
-        self.blacklist_checker = FastBlacklistChecker()
+        self.blacklist_checker = UltraFastBlacklistChecker()
         self.session = None
         
     async def setup_session(self):
@@ -88,7 +82,7 @@ class UltraFastProxyChecker:
                 
         return ips, valid_proxies
     
-    def check_proxies_batch(self, proxies: List[str]) -> List[str]:
+    async def check_proxies_batch(self, proxies: List[str]) -> List[str]:
         """Check a batch of proxies for blacklisting"""
         if not proxies:
             return []
@@ -99,8 +93,8 @@ class UltraFastProxyChecker:
         if not ips:
             return []
             
-        # Check all IPs in batch
-        results = self.blacklist_checker.check_multiple_ips(ips)
+        # Check all IPs in batch using async
+        results = await self.blacklist_checker.check_multiple_ips(ips)
         
         # Return only clean proxies
         clean_proxies = []
@@ -116,8 +110,12 @@ class UltraFastProxyChecker:
         
         # Proxy sources
         proxy_sources = [
-            "https://raw.githubusercontent.com/akbarali123A/Proxy/refs/heads/main/working_proxies.txt"
-      ]
+            "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
+            "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
+            "https://raw.githubusercontent.com/roosterkid/openproxylist/main/http.txt",
+            "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
+            "https://raw.githubusercontent.com/ProxyScraper/ProxyScraper/main/http.txt",
+        ]
         
         print("Fetching proxies from sources...")
         all_proxies = await self.fetch_all_proxies(proxy_sources)
@@ -137,7 +135,7 @@ class UltraFastProxyChecker:
         clean_proxies = []
         for i in range(0, total_proxies, BATCH_SIZE):
             batch = proxies_list[i:i + BATCH_SIZE]
-            batch_clean = self.check_proxies_batch(batch)
+            batch_clean = await self.check_proxies_batch(batch)
             clean_proxies.extend(batch_clean)
             
             # Progress update
@@ -159,12 +157,12 @@ class UltraFastProxyChecker:
         
         return clean_proxies
 
-def main():
-    """Main function"""
+async def main():
+    """Main async function"""
     print("Starting ultra-fast proxy checker...")
     
     checker = UltraFastProxyChecker()
-    clean_proxies = asyncio.run(checker.run())
+    clean_proxies = await checker.run()
     
     # Save results
     if clean_proxies:
@@ -177,4 +175,4 @@ def main():
     print("Proxy check completed!")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
