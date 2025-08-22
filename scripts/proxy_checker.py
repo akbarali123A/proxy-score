@@ -309,7 +309,7 @@ async def main():
     try:
         results = await asyncio.wait_for(
             checker.run_complete_check(proxy_sources),
-            timeout=1200  # 20 minutes timeout
+            timeout=7200  # 120 minutes timeout
         )
     except asyncio.TimeoutError:
         print("⏰ Timeout reached! Saving partial results...")
