@@ -1,4 +1,4 @@
-name: Ultra Fast All-in-One Proxy Checker
+name: Ultra Fast Proxy Checker
 
 on:
   schedule:
@@ -8,7 +8,7 @@ on:
 jobs:
   check_proxies:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 25  # Increased timeout
     
     steps:
       - name: Checkout repository
@@ -24,7 +24,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install aiodns aiohttp
 
-      - name: Run ultra-fast proxy checker
+      - name: Run optimized proxy checker
         run: |
           python scripts/proxy_checker.py
 
@@ -33,13 +33,6 @@ jobs:
         with:
           name: clean-proxies
           path: clean_proxies.txt
-          retention-days: 7
-
-      - name: Upload detailed results
-        uses: actions/upload-artifact@v4
-        with:
-          name: detailed-results
-          path: detailed_results.txt
           retention-days: 7
 
       - name: Commit and push results
