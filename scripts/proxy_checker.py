@@ -298,9 +298,10 @@ async def main():
     
     # Reduced list of reliable sources
     proxy_sources = [
-        "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
-        "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
-        "https://raw.githubusercontent.com/roosterkid/openproxylist/main/http.txt",
+        "https://raw.githubusercontent.com/akbarali123A/proxy_scraper/refs/heads/main/http_proxies.txt",
+        "https://raw.githubusercontent.com/akbarali123A/proxy_scraper/refs/heads/main/https_proxies.txt",
+        "https://raw.githubusercontent.com/akbarali123A/proxy_scraper/refs/heads/main/socks4_proxies.txt",
+        "https://raw.githubusercontent.com/akbarali123A/proxy_scraper/refs/heads/main/socks5_proxies.txt",
     ]
     
     checker = UltraFastProxyChecker()
