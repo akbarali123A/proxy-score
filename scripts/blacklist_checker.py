@@ -1,7 +1,7 @@
 import asyncio
 import aiodns
 import socket
-from typing import List, Set, Dict
+from typing import List, Dict
 import time
 
 class UltraFastBlacklistChecker:
@@ -77,29 +77,19 @@ class UltraFastBlacklistChecker:
                 
         return results
 
-# Sync wrapper for async functionality
-class FastBlacklistChecker:
-    def __init__(self):
-        self.async_checker = UltraFastBlacklistChecker()
-        
-    def is_ip_blacklisted(self, ip: str) -> bool:
-        """Synchronous wrapper for async blacklist checking"""
-        return asyncio.run(self.async_checker.is_ip_blacklisted(ip))
-    
-    def check_multiple_ips(self, ips: List[str]) -> Dict[str, bool]:
-        """Synchronous wrapper for multiple IP checking"""
-        return asyncio.run(self.async_checker.check_multiple_ips(ips))
-
 # Quick test
 if __name__ == "__main__":
-    checker = FastBlacklistChecker()
-    test_ips = ["8.8.8.8", "1.1.1.1", "127.0.0.2"]
+    async def test_checker():
+        checker = UltraFastBlacklistChecker()
+        test_ips = ["8.8.8.8", "1.1.1.1", "127.0.0.2"]
+        
+        start = time.time()
+        results = await checker.check_multiple_ips(test_ips)
+        end = time.time()
+        
+        for ip, blacklisted in results.items():
+            print(f"{ip}: {'BLACKLISTED' if blacklisted else 'CLEAN'}")
+        
+        print(f"Checked {len(test_ips)} IPs in {end-start:.3f} seconds")
     
-    start = time.time()
-    results = checker.check_multiple_ips(test_ips)
-    end = time.time()
-    
-    for ip, blacklisted in results.items():
-        print(f"{ip}: {'BLACKLISTED' if blacklisted else 'CLEAN'}")
-    
-    print(f"Checked {len(test_ips)} IPs in {end-start:.3f} seconds")
+    asyncio.run(test_checker())
