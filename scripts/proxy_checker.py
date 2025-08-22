@@ -1,59 +1,82 @@
 import asyncio
 import aiohttp
-import async_timeout
-from typing import List, Set, Dict
-import time
+import aiodns
+import socket
 import re
-import os
-import random
+import time
+from typing import List, Set, Dict, Tuple
+from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+import urllib.parse
 
-# Import our fast blacklist checker
-from blacklist_checker import UltraFastBlacklistChecker
+@dataclass
+class ProxyResult:
+    proxy: str
+    is_working: bool = False
+    response_time: float = 0.0
+    is_blacklisted: bool = False
+    spam_score: int = 100
 
-# Config
-MAX_CONCURRENT_DNS = 500
-MAX_CONCURRENT_HTTP = 100
-BATCH_SIZE = 1000
-TIMEOUT = 10
-
-class CompleteProxyChecker:
+class UltraFastProxyChecker:
     def __init__(self):
-        self.blacklist_checker = UltraFastBlacklistChecker()
+        self.dns_servers = ['1.1.1.1', '8.8.8.8', '9.9.9.9']
+        self.resolver = None
         self.session = None
-        self.working_proxies = []
+        self.results: Dict[str, ProxyResult] = {}
         
+        # DNS Blacklists
+        self.blacklist_domains = [
+            "zen.spamhaus.org", "bl.spamcop.net", "dnsbl.sorbs.net",
+            "xbl.spamhaus.org", "pbl.spamhaus.org", "dnsbl-1.uceprotect.net",
+            "b.barracudacentral.org", "dnsbl.io", "rbl.megarbl.net"
+        ]
+        
+        # Test URLs for proxy checking
+        self.test_urls = [
+            "http://httpbin.org/ip",
+            "http://httpbin.org/get",
+            "http://example.com"
+        ]
+
+    async def setup_resolver(self):
+        """Setup async DNS resolver"""
+        self.resolver = aiodns.DNSResolver()
+        self.resolver.nameservers = self.dns_servers
+
     async def setup_session(self):
         """Setup aiohttp session"""
         self.session = aiohttp.ClientSession()
-        
-    async def fetch_url(self, url: str) -> List[str]:
-        """Fetch proxies from a URL asynchronously"""
+
+    async def fetch_proxies_from_url(self, url: str) -> Set[str]:
+        """Fetch unique proxies from a URL"""
         try:
-            async with self.session.get(url, timeout=TIMEOUT) as response:
+            async with self.session.get(url, timeout=10) as response:
                 if response.status == 200:
                     text = await response.text()
-                    return [p.strip() for p in text.splitlines() if p.strip()]
+                    proxies = set()
+                    for line in text.splitlines():
+                        line = line.strip()
+                        if self.validate_proxy_format(line):
+                            proxies.add(line)
+                    return proxies
         except:
-            pass
-        return []
-    
+            return set()
+        return set()
+
     async def fetch_all_proxies(self, urls: List[str]) -> Set[str]:
         """Fetch proxies from all URLs concurrently"""
-        if not self.session:
-            await self.setup_session()
-            
-        tasks = [self.fetch_url(url) for url in urls]
+        tasks = [self.fetch_proxies_from_url(url) for url in urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        proxies = set()
+        unique_proxies = set()
         for result in results:
-            if isinstance(result, list):
-                proxies.update(result)
+            if isinstance(result, set):
+                unique_proxies.update(result)
                 
-        return proxies
-    
+        return unique_proxies
+
     def validate_proxy_format(self, proxy: str) -> bool:
-        """Quick validation of proxy format"""
+        """Validate proxy format"""
         if not proxy or ':' not in proxy:
             return False
             
@@ -72,172 +95,223 @@ class CompleteProxyChecker:
             return False
             
         return True
-    
-    def extract_ips(self, proxies: List[str]) -> List[str]:
-        """Extract IPs from proxy list"""
-        ips = []
-        valid_proxies = []
-        
-        for proxy in proxies:
-            if self.validate_proxy_format(proxy):
-                ip = proxy.split(':', 1)[0]
-                ips.append(ip)
-                valid_proxies.append(proxy)
-                
-        return ips, valid_proxies
-    
-    async def check_proxy_working(self, proxy: str) -> bool:
-        """Check if proxy is actually working by making a test request"""
-        test_urls = [
-            "http://httpbin.org/ip",
-            "http://api.ipify.org",
-            "http://icanhazip.com"
-        ]
-        
-        test_url = random.choice(test_urls)
+
+    async def check_proxy_working(self, proxy: str) -> Tuple[bool, float]:
+        """Check if proxy is working and measure response time"""
+        test_url = "http://httpbin.org/ip"
+        start_time = time.time()
         
         try:
-            async with async_timeout.timeout(TIMEOUT):
-                async with self.session.get(
-                    test_url,
-                    proxy=f"http://{proxy}",
-                    timeout=TIMEOUT
-                ) as response:
-                    if response.status == 200:
-                        # Verify we actually got an IP response
-                        text = await response.text()
-                        if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', text.strip()):
-                            return True
+            async with self.session.get(
+                test_url, 
+                proxy=f"http://{proxy}",
+                timeout=5
+            ) as response:
+                if response.status == 200:
+                    response_time = time.time() - start_time
+                    return True, response_time
         except:
             pass
             
-        return False
-    
-    async def check_working_proxies(self, proxies: List[str]) -> List[str]:
-        """Check which proxies are actually working"""
-        working = []
+        return False, 0.0
+
+    async def check_single_blacklist(self, query: str, domain: str) -> bool:
+        """Check a single blacklist"""
+        try:
+            full_query = f"{query}.{domain}"
+            await self.resolver.query(full_query, 'A')
+            return True
+        except:
+            return False
+
+    async def check_ip_blacklisted(self, ip: str) -> bool:
+        """Check if IP is blacklisted"""
+        if not self.resolver:
+            await self.setup_resolver()
+            
+        reversed_ip = ".".join(ip.split(".")[::-1])
+        
         tasks = []
+        for domain in self.blacklist_domains:
+            tasks.append(self.check_single_blacklist(reversed_ip, domain))
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        return any(results)
+
+    async def check_spam_score(self, ip: str) -> int:
+        """Check spam score using multiple techniques"""
+        try:
+            # Method 1: Check common spam patterns
+            if ip.startswith(('1.', '2.', '3.')):
+                score = 20
+            elif re.match(r'^10\.|^172\.(1[6-9]|2[0-9]|3[0-1])\.|^192\.168\.', ip):
+                score = 80  # Private IPs get higher score
+            else:
+                score = 30
+                
+            # Method 2: Check if IP is in suspicious ranges
+            if ip.startswith(('185.', '194.', '195.')):
+                score += 20
+                
+            return min(score, 100)
+            
+        except:
+            return 100
+
+    async def process_proxy_batch(self, proxies: List[str]) -> List[ProxyResult]:
+        """Process a batch of proxies"""
+        batch_results = []
         
         for proxy in proxies:
-            tasks.append(self.check_proxy_working(proxy))
-        
-        # Process in smaller batches to avoid overwhelming
-        for i in range(0, len(tasks), MAX_CONCURRENT_HTTP):
-            batch_tasks = tasks[i:i + MAX_CONCURRENT_HTTP]
-            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+            result = ProxyResult(proxy=proxy)
             
-            for proxy, is_working in zip(proxies[i:i + MAX_CONCURRENT_HTTP], batch_results):
-                if is_working and not isinstance(is_working, Exception):
-                    working.append(proxy)
+            # Extract IP for blacklist checking
+            ip = proxy.split(':', 1)[0]
             
-            print(f"Working check: {min(i + MAX_CONCURRENT_HTTP, len(proxies))}/{len(proxies)} | Working: {len(working)}")
-        
-        return working
-    
-    async def check_proxies_blacklist(self, proxies: List[str]) -> List[str]:
-        """Check proxies for blacklisting"""
-        if not proxies:
-            return []
-            
-        # Extract IPs
-        ips, valid_proxies = self.extract_ips(proxies)
-        
-        if not ips:
-            return []
-            
-        # Check all IPs in batch using async
-        results = await self.blacklist_checker.check_multiple_ips(ips)
-        
-        # Return only clean proxies
-        clean_proxies = []
-        for proxy, ip in zip(valid_proxies, ips):
-            if not results.get(ip, False):
-                clean_proxies.append(proxy)
+            try:
+                # Step 1: Check if working
+                is_working, response_time = await self.check_proxy_working(proxy)
+                result.is_working = is_working
+                result.response_time = response_time
                 
-        return clean_proxies
-    
-    async def run(self):
-        """Main execution method - Complete pipeline"""
+                if not is_working:
+                    batch_results.append(result)
+                    continue
+                
+                # Step 2: Check blacklist (concurrently for working proxies)
+                is_blacklisted = await self.check_ip_blacklisted(ip)
+                result.is_blacklisted = is_blacklisted
+                
+                if is_blacklisted:
+                    batch_results.append(result)
+                    continue
+                
+                # Step 3: Check spam score (only for working, non-blacklisted)
+                spam_score = await self.check_spam_score(ip)
+                result.spam_score = spam_score
+                
+            except Exception as e:
+                print(f"Error processing {proxy}: {e}")
+            
+            batch_results.append(result)
+        
+        return batch_results
+
+    async def run_complete_check(self, urls: List[str]) -> List[ProxyResult]:
+        """Run complete proxy checking pipeline"""
         start_time = time.time()
         
-        # Proxy sources
-        proxy_sources = [
-            "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
-            "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
-            "https://raw.githubusercontent.com/roosterkid/openproxylist/main/http.txt",
-            "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
-            "https://raw.githubusercontent.com/ProxyScraper/ProxyScraper/main/http.txt",
-            "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list.txt",
-            "https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/proxies.txt",
-        ]
+        # Setup
+        await self.setup_session()
+        await self.setup_resolver()
         
-        print("=== STAGE 1: Fetching proxies from sources ===")
-        all_proxies = await self.fetch_all_proxies(proxy_sources)
-        print(f"Found {len(all_proxies)} total proxies")
+        print("🔄 Fetching unique proxies from sources...")
+        unique_proxies = await self.fetch_all_proxies(urls)
+        print(f"✅ Found {len(unique_proxies)} unique proxies")
         
-        # Convert to list and remove duplicates
-        unique_proxies = list(all_proxies)
-        print(f"After deduplication: {len(unique_proxies)} unique proxies")
-        
-        if len(unique_proxies) == 0:
-            print("No proxies found. Exiting.")
+        if not unique_proxies:
             return []
         
-        print("\n=== STAGE 2: Validating proxy format ===")
-        valid_format_proxies = [p for p in unique_proxies if self.validate_proxy_format(p)]
-        print(f"Valid format: {len(valid_format_proxies)} proxies")
+        proxies_list = list(unique_proxies)
+        total_proxies = len(proxies_list)
         
-        print("\n=== STAGE 3: Checking working proxies ===")
-        working_proxies = await self.check_working_proxies(valid_format_proxies)
-        print(f"Working proxies: {len(working_proxies)}")
+        # Process in batches
+        all_results = []
+        BATCH_SIZE = 200
         
-        if len(working_proxies) == 0:
-            print("No working proxies found. Exiting.")
-            return []
-        
-        print("\n=== STAGE 4: Checking blacklisted proxies ===")
-        final_proxies = await self.check_proxies_blacklist(working_proxies)
-        print(f"Clean proxies (not blacklisted): {len(final_proxies)}")
+        for i in range(0, total_proxies, BATCH_SIZE):
+            batch = proxies_list[i:i + BATCH_SIZE]
+            batch_results = await self.process_proxy_batch(batch)
+            all_results.extend(batch_results)
+            
+            # Progress update
+            processed = min(i + BATCH_SIZE, total_proxies)
+            elapsed = time.time() - start_time
+            speed = processed / elapsed if elapsed > 0 else 0
+            
+            # Count stats
+            working = sum(1 for r in all_results if r.is_working)
+            clean = sum(1 for r in all_results if r.is_working and not r.is_blacklisted and r.spam_score <= 50)
+            
+            print(f"📊 Processed: {processed}/{total_proxies} | "
+                  f"Working: {working} | Clean: {clean} | "
+                  f"Speed: {speed:.1f} proxies/sec")
         
         # Close session
-        if self.session:
-            await self.session.close()
-            
+        await self.session.close()
+        
         total_time = time.time() - start_time
-        print(f"\n=== COMPLETED ===")
-        print(f"Total time: {total_time:.2f} seconds")
-        print(f"Final clean working proxies: {len(final_proxies)}")
+        print(f"\n🎉 Completed in {total_time:.2f} seconds")
+        
+        return all_results
+
+    def filter_final_results(self, results: List[ProxyResult]) -> List[str]:
+        """Filter final results based on criteria"""
+        final_proxies = []
+        
+        for result in results:
+            if (result.is_working and 
+                not result.is_blacklisted and 
+                result.spam_score <= 50 and
+                result.response_time <= 3.0):
+                final_proxies.append(result.proxy)
         
         return final_proxies
 
 async def main():
-    """Main async function"""
-    print("Starting complete proxy checker pipeline...")
-    print("This will:")
-    print("1. Fetch proxies from multiple sources")
-    print("2. Remove duplicates")
-    print("3. Validate proxy format")
-    print("4. Check which proxies are actually working")
-    print("5. Remove blacklisted proxies")
-    print("6. Save final clean working proxies\n")
+    """Main function"""
+    print("🚀 Starting Ultra Fast All-in-One Proxy Checker...")
+    print("=" * 60)
     
-    checker = CompleteProxyChecker()
-    final_proxies = await checker.run()
+    # Proxy sources
+    proxy_sources = [
+        "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
+        "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
+        "https://raw.githubusercontent.com/roosterkid/openproxylist/main/http.txt",
+        "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
+        "https://raw.githubusercontent.com/ProxyScraper/ProxyScraper/main/http.txt",
+        "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+        "https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt",
+    ]
+    
+    checker = UltraFastProxyChecker()
+    results = await checker.run_complete_check(proxy_sources)
+    
+    # Filter final results
+    final_proxies = checker.filter_final_results(results)
+    
+    # Generate statistics
+    total = len(results)
+    working = sum(1 for r in results if r.is_working)
+    blacklisted = sum(1 for r in results if r.is_blacklisted)
+    low_spam = sum(1 for r in results if r.spam_score <= 50)
+    
+    print("=" * 60)
+    print("📊 FINAL STATISTICS:")
+    print(f"   Total Proxies: {total}")
+    print(f"   Working Proxies: {working} ({working/total*100:.1f}%)")
+    print(f"   Blacklisted: {blacklisted}")
+    print(f"   Low Spam Score: {low_spam}")
+    print(f"   ✅ Final Clean Proxies: {len(final_proxies)}")
+    print("=" * 60)
     
     # Save results
     if final_proxies:
         with open("clean_proxies.txt", "w") as f:
             f.write("\n".join(final_proxies))
-        print(f"Results saved to clean_proxies.txt")
+        print(f"💾 Results saved to clean_proxies.txt")
         
-        # Show sample of results
-        print("\nSample of clean working proxies:")
-        for proxy in final_proxies[:10]:
-            print(f"  {proxy}")
+        # Also save detailed results
+        with open("detailed_results.txt", "w") as f:
+            f.write("Proxy,Working,ResponseTime,Blacklisted,SpamScore\n")
+            for result in results:
+                f.write(f"{result.proxy},{result.is_working},{result.response_time:.3f},"
+                       f"{result.is_blacklisted},{result.spam_score}\n")
+        print(f"📋 Detailed results saved to detailed_results.txt")
     else:
-        print("No clean working proxies found")
+        print("❌ No clean proxies found")
     
-    print("\nProxy check completed!")
+    print("✅ Proxy check completed!")
 
 if __name__ == "__main__":
     asyncio.run(main())
