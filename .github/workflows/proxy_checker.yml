@@ -8,7 +8,7 @@ on:
 jobs:
   check_proxies:
     runs-on: ubuntu-latest
-    timeout-minutes: 25  # Increased timeout
+    timeout-minutes: 120  # Increased timeout
     
     steps:
       - name: Checkout repository
