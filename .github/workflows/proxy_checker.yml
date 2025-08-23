@@ -1,11 +1,10 @@
-name: Ultra Fast Proxy Checker
+name: Ultra Fast Mass Proxy Checker
 
 on:
   schedule:
-    # Runs at 7 AM and 7 PM UTC daily
     - cron: '0 7 * * *'   # 7 AM UTC
-    - cron: '0 19 * * *'  # 7 PM UTC (19:00 in 24h format)
-  workflow_dispatch:  # Manual trigger option
+    - cron: '0 19 * * *'  # 7 PM UTC
+  workflow_dispatch:  # Manual trigger
 
 jobs:
   check_proxies:
@@ -25,34 +24,31 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install aiodns aiohttp
+          sudo apt-get update
+          sudo apt-get install -y dnsutils  # For dig command
 
-      - name: Run optimized proxy checker
+      - name: Run ultra-fast mass proxy checker
         run: |
+          ulimit -n 65535  # Increase file descriptors
           python scripts/proxy_checker.py
 
-      - name: Upload clean proxies
+      - name: Upload results
         uses: actions/upload-artifact@v4
         with:
-          name: clean-proxies-${{ github.run_id }}
+          name: proxy-results-${{ github.run_id }}
           path: clean_proxies.txt
-          retention-days: 7
+          retention-days: 3
 
-      - name: Commit and push results
+      - name: Commit results
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add clean_proxies.txt
-          git commit -m "Auto-update: Clean proxies $(date +'%Y-%m-%d %H:%M')" || echo "No changes to commit"
+          git commit -m "Auto-update: $(date +'%Y-%m-%d %H:%M') - $(wc -l < clean_proxies.txt) proxies" || echo "No changes to commit"
           git push origin HEAD:${{ github.ref }} || echo "Nothing to push"
-        
-      - name: Send success notification (optional)
-        if: success()
-        run: |
-          echo "✅ Proxy check completed successfully at $(date)"
-          echo "Found $(wc -l < clean_proxies.txt) clean proxies"
 
-      - name: Send failure notification (optional)
-        if: failure()
+      - name: Show results
         run: |
-          echo "❌ Proxy check failed at $(date)"
-          exit 1
+          echo "📊 Final results:"
+          wc -l clean_proxies.txt || echo "No proxies found"
+          echo "✅ Workflow completed successfully!"
