@@ -8,8 +8,8 @@ on:
 
 jobs:
   check_proxies:
-    runs-on: ubuntu-latest
-    timeout-minutes: 120  # Increased timeout
+    runs-on: ubuntu-latest-16core  # Use larger runner if available
+    timeout-minutes: 120  # 2 hours maximum
     
     steps:
       - name: Checkout repository
@@ -20,17 +20,26 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install dependencies
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dnsutils python3-pip
+          ulimit -n 65536
+
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install aiodns aiohttp
-          sudo apt-get update
-          sudo apt-get install -y dnsutils  # For dig command
+          pip install aiohttp
 
       - name: Run ultra-fast mass proxy checker
         run: |
-          ulimit -n 65535  # Increase file descriptors
-          python scripts/proxy_checker.py
+          # Increase system limits
+          ulimit -n 100000
+          sysctl -w net.core.somaxconn=65535
+          sysctl -w net.ipv4.tcp_max_syn_backlog=65535
+          
+          # Run with high priority
+          nice -n -10 python scripts/proxy_checker.py
 
       - name: Upload results
         uses: actions/upload-artifact@v4
@@ -44,11 +53,16 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add clean_proxies.txt
-          git commit -m "Auto-update: $(date +'%Y-%m-%d %H:%M') - $(wc -l < clean_proxies.txt) proxies" || echo "No changes to commit"
+          git commit -m "Auto-update: $(date +'%Y-%m-%d %H:%M') - $(wc -l < clean_proxies.txt || echo 0) proxies" || echo "No changes to commit"
           git push origin HEAD:${{ github.ref }} || echo "Nothing to push"
 
-      - name: Show results
+      - name: Show final results
         run: |
           echo "📊 Final results:"
-          wc -l clean_proxies.txt || echo "No proxies found"
-          echo "✅ Workflow completed successfully!"
+          if [ -f clean_proxies.txt ]; then
+            count=$(wc -l < clean_proxies.txt)
+            echo "✅ Found $count clean proxies"
+          else
+            echo "❌ No proxies found"
+          fi
+          echo "🏁 Workflow completed at $(date)"
