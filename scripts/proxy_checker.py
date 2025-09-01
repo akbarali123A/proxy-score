@@ -8,6 +8,7 @@ import multiprocessing
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from typing import List, Set, Dict
 import os
+import resource
 
 class UltraFastProxyChecker:
     def __init__(self):
@@ -21,9 +22,17 @@ class UltraFastProxyChecker:
         self.clean_proxies = set()
         self.session = None
 
+    def increase_limits(self):
+        """Increase system limits without root permissions"""
+        try:
+            # Increase file descriptor limit
+            resource.setrlimit(resource.RLIMIT_NOFILE, (8192, 8192))
+        except:
+            pass  # Ignore if we can't increase limits
+
     async def setup_session(self):
         """Setup optimized aiohttp session"""
-        connector = aiohttp.TCPConnector(limit=10000, limit_per_host=1000, use_dns_cache=True, ttl_dns_cache=300)
+        connector = aiohttp.TCPConnector(limit=1000, limit_per_host=100, use_dns_cache=True, ttl_dns_cache=300)
         timeout = aiohttp.ClientTimeout(total=5, connect=1, sock_connect=1, sock_read=1)
         self.session = aiohttp.ClientSession(connector=connector, timeout=timeout)
 
@@ -49,15 +58,14 @@ class UltraFastProxyChecker:
         
         for url in self.proxy_sources:
             try:
-                async with self.session.get(url, timeout=2) as response:
+                async with self.session.get(url, timeout=3) as response:
                     if response.status == 200:
                         text = await response.text()
                         lines = text.splitlines()
-                        for line in lines[:20000]:  # Limit per source
+                        for line in lines[:10000]:  # Limit per source
                             line = line.strip()
                             if self.validate_proxy_format(line):
                                 all_proxies.add(line)
-                        print(f"✅ Fetched {len(all_proxies)} from {url.split('/')[-1]}")
             except:
                 continue
                 
@@ -68,12 +76,13 @@ class UltraFastProxyChecker:
         print("🔌 Starting mass socket connectivity check...")
         
         # Split proxies into chunks for parallel processing
-        chunk_size = 10000
+        chunk_size = 5000
         chunks = [proxies[i:i + chunk_size] for i in range(0, len(proxies), chunk_size)]
         
         working_proxies = []
+        completed = 0
         
-        with ProcessPoolExecutor(max_workers=os.cpu_count() * 2) as executor:
+        with ThreadPoolExecutor(max_workers=50) as executor:
             # Process chunks in parallel
             futures = {executor.submit(self.process_socket_chunk, chunk): chunk for chunk in chunks}
             
@@ -81,7 +90,8 @@ class UltraFastProxyChecker:
                 try:
                     chunk_result = future.result()
                     working_proxies.extend(chunk_result)
-                    print(f"✅ Processed chunk: {len(chunk_result)} working proxies")
+                    completed += len(chunk)
+                    print(f"✅ Processed {completed:,}/{len(proxies):,} - {len(chunk_result)} working")
                 except Exception as e:
                     print(f"❌ Chunk processing error: {e}")
         
@@ -105,7 +115,7 @@ class UltraFastProxyChecker:
             
             # Create socket with very short timeout
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(0.3)  # 300ms timeout
+            sock.settimeout(0.5)  # 500ms timeout
             
             result = sock.connect_ex((ip, port))
             sock.close()
@@ -129,13 +139,14 @@ class UltraFastProxyChecker:
             ip_proxy_map[ip] = proxy
         
         # Split IPs into chunks
-        chunk_size = 5000
+        chunk_size = 2000
         ip_list = list(unique_ips)
         chunks = [ip_list[i:i + chunk_size] for i in range(0, len(ip_list), chunk_size)]
         
         blacklisted_ips = set()
+        completed = 0
         
-        with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+        with ThreadPoolExecutor(max_workers=20) as executor:
             # Process chunks in parallel
             futures = {executor.submit(self.process_blacklist_chunk, chunk): chunk for chunk in chunks}
             
@@ -143,7 +154,8 @@ class UltraFastProxyChecker:
                 try:
                     chunk_result = future.result()
                     blacklisted_ips.update(chunk_result)
-                    print(f"✅ Processed blacklist chunk: {len(chunk_result)} blacklisted IPs")
+                    completed += len(chunk)
+                    print(f"✅ Checked {completed:,}/{len(ip_list):,} IPs - {len(chunk_result)} blacklisted")
                 except Exception as e:
                     print(f"❌ Blacklist chunk error: {e}")
         
@@ -160,21 +172,18 @@ class UltraFastProxyChecker:
         return blacklisted
 
     def check_single_blacklist(self, ip: str) -> bool:
-        """Check single IP against blacklist"""
+        """Check single IP against blacklist using Python DNS"""
         try:
             reversed_ip = ".".join(ip.split(".")[::-1])
             query = f"{reversed_ip}.zen.spamhaus.org"
             
-            # Use nslookup for faster DNS queries
-            result = subprocess.run(
-                ['nslookup', query],
-                capture_output=True,
-                text=True,
-                timeout=0.5
-            )
-            
-            return "NXDOMAIN" not in result.stdout and result.returncode == 0
-            
+            # Use Python's socket for DNS lookup (no subprocess)
+            try:
+                socket.gethostbyname(query)
+                return True  # If resolved, it's blacklisted
+            except socket.gaierror:
+                return False  # Not blacklisted
+                
         except:
             return False
 
@@ -184,6 +193,7 @@ class UltraFastProxyChecker:
         print("=" * 60)
         start_time = time.time()
         
+        self.increase_limits()
         await self.setup_session()
         
         # Step 1: Fetch all proxies
@@ -253,11 +263,4 @@ def main():
         print("✅ Process completed!")
 
 if __name__ == "__main__":
-    # Increase resource limits
-    import resource
-    try:
-        resource.setrlimit(resource.RLIMIT_NOFILE, (100000, 100000))
-    except:
-        pass
-    
     main()
